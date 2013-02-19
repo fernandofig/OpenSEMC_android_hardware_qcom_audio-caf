@@ -2348,6 +2348,11 @@ void AudioHardware::aic3254_powerdown() {
 
 status_t AudioHardware::setupDeviceforVoipCall(bool value)
 {
+    ALOGV("setupDeviceforVoipCall value %d",value);
+    if (mMode == AudioSystem::MODE_IN_CALL && value == false) {
+        ALOGE("mode already set for voice call, do not change to normal");
+        return NO_ERROR;
+    }
 
     int mode = (value ? AudioSystem::MODE_IN_COMMUNICATION : AudioSystem::MODE_NORMAL);
     if (setMode(mode) != NO_ERROR) {
