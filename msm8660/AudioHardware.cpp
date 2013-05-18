@@ -40,6 +40,7 @@
 #include <sys/mman.h>
 #include "control.h"
 #include "acdb.h"
+#include "includes-hack.h"
 
 #ifdef HTC_ACOUSTIC_AUDIO
     extern "C" {
