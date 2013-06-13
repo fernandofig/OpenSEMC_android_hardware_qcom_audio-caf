@@ -751,7 +751,8 @@ void ALSADevice::switchDevice(alsa_handle_t *handle, uint32_t devices, uint32_t 
         strlcat(ident, mCurRxUCMDevice, sizeof(ident));
         rx_dev_id = snd_use_case_get(handle->ucMgr, ident, NULL);
 
-        if (rx_dev_id == DEVICE_SPEAKER_RX_ACDB_ID && tx_dev_id == DEVICE_HANDSET_TX_ACDB_ID) {
+        if (((rx_dev_id == DEVICE_SPEAKER_MONO_RX_ACDB_ID ) || (rx_dev_id == DEVICE_SPEAKER_STEREO_RX_ACDB_ID ))
+         && tx_dev_id == DEVICE_HANDSET_TX_ACDB_ID) {
             tx_dev_id = DEVICE_SPEAKER_TX_ACDB_ID;
         }
 
@@ -762,6 +763,7 @@ void ALSADevice::switchDevice(alsa_handle_t *handle, uint32_t devices, uint32_t 
                 ALOGE("csd_client_enable_device is NULL");
             } else {
                 int tmp_tx_id = tx_dev_id;
+                int tmp_rx_id = rx_dev_id;
 
 #ifdef USE_ES325_2MIC
                 if (tx_dev_id == 4) {
@@ -772,10 +774,19 @@ void ALSADevice::switchDevice(alsa_handle_t *handle, uint32_t devices, uint32_t 
                     setMixerControl("ES325 2Mic Enable", 0, 0);
                 }
 #endif
-
+#ifdef HTC_CSDCLIENT
+                if (tx_dev_id == DEVICE_BT_SCO_TX_ACDB_ID)
+                {
+                    tmp_tx_id = 1027;
+                }
+                if (rx_dev_id == DEVICE_BT_SCO_RX_ACDB_ID)
+                {
+                    tmp_rx_id = 1127;
+                }
+#endif
                 int adjustedFlags = adjustFlagsForCsd(mDevSettingsFlag,
                         mCurRxUCMDevice);
-                err = csd_enable_device(rx_dev_id, tmp_tx_id, adjustedFlags);
+                err = csd_enable_device(tmp_rx_id, tmp_tx_id, adjustedFlags);
                 if (err < 0)
                 {
                     ALOGE("csd_client_disable_device failed, error %d", err);
@@ -1574,7 +1585,8 @@ char *ALSADevice::getUCMDeviceFromAcdbId(int acdb_id)
      switch(acdb_id) {
         case DEVICE_HANDSET_RX_ACDB_ID:
              return strdup(SND_USE_CASE_DEV_HANDSET);
-        case DEVICE_SPEAKER_RX_ACDB_ID:
+        case DEVICE_SPEAKER_MONO_RX_ACDB_ID:
+        case DEVICE_SPEAKER_STEREO_RX_ACDB_ID:
              return strdup(SND_USE_CASE_DEV_SPEAKER);
         case DEVICE_HEADSET_RX_ACDB_ID:
              return strdup(SND_USE_CASE_DEV_HEADPHONES);
