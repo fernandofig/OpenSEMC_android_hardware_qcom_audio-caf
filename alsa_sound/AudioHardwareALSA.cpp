@@ -63,6 +63,7 @@ extern "C"
 #ifdef QCOM_ACDB_ENABLED
     static int (*acdb_init)();
     static void (*acdb_deallocate)();
+    static void (*acdb_send_audio_cal)(int, int);
 #endif
 #ifdef QCOM_CSDCLIENT_ENABLED
     static int (*csd_client_init)();
@@ -96,8 +97,8 @@ AudioHardwareInterface *AudioHardwareALSA::create() {
 }
 
 AudioHardwareALSA::AudioHardwareALSA() :
-    mALSADevice(0),mVoipStreamCount(0),mVoipMicMute(false),mVoipBitRate(0)
-    ,mCallState(0),mAcdbHandle(NULL),mCsdHandle(NULL),mMicMute(0)
+    mALSADevice(0),mVoipInStreamCount(0),mVoipOutStreamCount(0),mVoipMicMute(false),
+    mVoipBitRate(0),mCallState(0),mAcdbHandle(NULL),mCsdHandle(NULL),mMicMute(0)
 {
     FILE *fp;
     char soundCardInfo[200];
@@ -482,19 +483,26 @@ status_t  AudioHardwareALSA::setFmVolume(float value)
 
     int vol;
 
-    if (value < 0.0) {
-        ALOGW("setFmVolume(%f) under 0.0, assuming 0.0\n", value);
-        value = 0.0;
-    } else if (value > 1.0) {
-        ALOGW("setFmVolume(%f) over 1.0, assuming 1.0\n", value);
-        value = 1.0;
+    for(ALSAHandleList::iterator it = mDeviceList.begin();
+      it != mDeviceList.end(); ++it) {
+        if((!strcmp(it->useCase, SND_USE_CASE_VERB_DIGITAL_RADIO)) ||
+           (!strcmp(it->useCase, SND_USE_CASE_MOD_PLAY_FM))) {
+            if (value < 0.0) {
+                ALOGW("setFmVolume(%f) under 0.0, assuming 0.0\n", value);
+                value = 0.0;
+            } else if (value > 1.0) {
+                ALOGW("setFmVolume(%f) over 1.0, assuming 1.0\n", value);
+                value = 1.0;
+            }
+            vol  = lrint((value * 0x2000) + 0.5);
+
+            ALOGV("setFmVolume(%f)\n", value);
+            ALOGV("Setting FM volume to %d (available range is 0 to 0x2000)\n", vol);
+
+            mALSADevice->setFmVolume(vol, &(*it));
+            break;
+        }
     }
-    vol  = lrint((value * 0x2000) + 0.5);
-
-    ALOGV("setFmVolume(%f)\n", value);
-    ALOGV("Setting FM volume to %d (available range is 0 to 0x2000)\n", vol);
-
-    mALSADevice->setFmVolume(vol);
 
     return status;
 }
@@ -777,15 +785,11 @@ status_t AudioHardwareALSA::setParameters(const String8& keyValuePairs)
     key = String8(MODE_CALL_KEY);
     if (param.getInt(key,state) == NO_ERROR) {
         if (mCallState != state) {
-            if(!((!(mCallState & 0xF) && ((state & 0xF) ==  CS_ACTIVE)) ||
-                 (!(mCallState & 0xF0) && ((state & 0xF0) == IMS_ACTIVE)) ||
-                 (!(mCallState & 0xF00) && ((state & 0xF00) == CS_ACTIVE_SESSION2)))) {
-                mCallState = state;
+            mCallState = state;
+            if (isAnyCallActive()) {
                 doRouting(0);
             }
-            mCallState = state;
         }
-        mCallState = state;
         param.remove(key);
     }
     if (param.size()) {
@@ -879,6 +883,12 @@ String8 AudioHardwareALSA::getParameters(const String8& keys)
         param.addInt(key, mCurDevice);
     }
 
+    key = String8(ECHO_SUPRESSION);
+    if (param.get(key, value) == NO_ERROR) {
+        value = String8("yes");
+        param.add(key, value);
+    }
+
     ALOGV("AudioHardwareALSA::getParameters() %s", param.toString().string());
     return param.toString();
 }
@@ -901,7 +911,7 @@ void AudioHardwareALSA::closeUSBRecording()
 void AudioHardwareALSA::closeUsbPlaybackIfNothingActive(){
     ALOGV("closeUsbPlaybackIfNothingActive, musbPlaybackState: %d", musbPlaybackState);
     if(!musbPlaybackState && mAudioUsbALSA != NULL) {
-        mAudioUsbALSA->exitPlaybackThread(SIGNAL_EVENT_TIMEOUT);
+        mAudioUsbALSA->exitPlaybackThread(SIGNAL_EVENT_KILLTHREAD);
     }
 }
 
@@ -909,7 +919,7 @@ void AudioHardwareALSA::closeUsbRecordingIfNothingActive(){
     ALOGV("closeUsbRecordingIfNothingActive, musbRecordingState: %d", musbRecordingState);
     if(!musbRecordingState && mAudioUsbALSA != NULL) {
         ALOGD("Closing USB Recording Session as no stream is active");
-        mAudioUsbALSA->setkillUsbRecordingThread(true);
+        mAudioUsbALSA->exitRecordingThread(SIGNAL_EVENT_KILLTHREAD);
     }
 }
 
@@ -936,6 +946,8 @@ status_t AudioHardwareALSA::doRouting(int device)
     int newMode = mode();
     bool isRouted = false;
 
+    if(device)
+        mALSADevice->mCurDevice = device;
     if ((device == AudioSystem::DEVICE_IN_VOICE_CALL)
 #if defined(QCOM_FM_ENABLED) || defined(STE_FM)
         || (device == AudioSystem::DEVICE_IN_FM_RX)
@@ -1217,17 +1229,11 @@ AudioHardwareALSA::openOutputStream(uint32_t devices,
                    (!strcmp(it->useCase, SND_USE_CASE_MOD_PLAY_VOIP))) {
                     ALOGD("openOutput:  it->rxHandle %d it->handle %d",it->rxHandle,it->handle);
                     voipstream_active = true;
-                    if(mVoipStreamCount >= 2)
-                    {
-                      ALOGE("Avoid creating multiple VoIP session ");
-                      if (status) *status = err;
-                      return NULL;
-                    }
                     break;
                 }
         }
       if(voipstream_active == false) {
-         mVoipStreamCount = 0;
+         mVoipOutStreamCount = 0;
          mVoipMicMute = false;
          alsa_handle_t alsa_handle;
          unsigned long bufferSize;
@@ -1267,7 +1273,7 @@ AudioHardwareALSA::openOutputStream(uint32_t devices,
           mDeviceList.push_back(alsa_handle);
           it = mDeviceList.end();
           it--;
-          ALOGV("openoutput: mALSADevice->route useCase %s mCurDevice %d mVoipStreamCount %d mode %d", it->useCase,mCurDevice,mVoipStreamCount, mode());
+          ALOGV("openoutput: mALSADevice->route useCase %s mCurDevice %d mVoipOutStreamCount %d mode %d", it->useCase,mCurDevice,mVoipOutStreamCount, mode());
           if((mCurDevice & AudioSystem::DEVICE_OUT_ANLG_DOCK_HEADSET)||
              (mCurDevice & AudioSystem::DEVICE_OUT_DGTL_DOCK_HEADSET)||
              (mCurDevice & AudioSystem::DEVICE_OUT_PROXY)){
@@ -1295,11 +1301,21 @@ AudioHardwareALSA::openOutputStream(uint32_t devices,
               return NULL;
           }
       }
+      if(mVoipOutStreamCount>=1) {
+          ALOGE("Trying to OPen Multiple Output streams: Not Supported %d",mVoipOutStreamCount);
+          return out;
+      }
       out = new AudioStreamOutALSA(this, &(*it));
       err = out->set(format, channels, sampleRate, devices);
       if(err == NO_ERROR) {
-          mVoipStreamCount++;   //increment VoipstreamCount only if success
-          ALOGD("openoutput mVoipStreamCount %d",mVoipStreamCount);
+          mVoipOutStreamCount++;   //increment VoipOutputstreamCount only if success
+          ALOGD("openoutput mVoipOutStreamCount %d",mVoipOutStreamCount);
+      } else {
+          mLock.unlock();
+          delete out;
+          out = NULL;
+          ALOGE("AudioStreamOutALSA->set() failed, return NULL");
+          mLock.lock();
       }
       if (status) *status = err;
       return out;
@@ -1581,17 +1597,11 @@ AudioHardwareALSA::openInputStream(uint32_t devices,
                    (!strcmp(it->useCase, SND_USE_CASE_MOD_PLAY_VOIP))) {
                     ALOGD("openInput:  it->rxHandle %p it->handle %p",it->rxHandle,it->handle);
                     voipstream_active = true;
-                    if(mVoipStreamCount >= 2)
-                    {
-                      ALOGE("Avoid creating multiple VoIP session ");
-                      if (status) *status = err;
-                      return NULL;
-                    }
                     break;
                 }
         }
         if(voipstream_active == false) {
-           mVoipStreamCount = 0;
+           mVoipInStreamCount = 0;
            mVoipMicMute = false;
            alsa_handle_t alsa_handle;
            unsigned long bufferSize;
@@ -1665,11 +1675,21 @@ AudioHardwareALSA::openInputStream(uint32_t devices,
                return NULL;
            }
         }
+        if(mVoipInStreamCount>=1){
+            ALOGE("Trying to Open Multiple inpust Stream: Not supported %d",mVoipInStreamCount);
+            return in;
+        }
         in = new AudioStreamInALSA(this, &(*it), acoustics);
         err = in->set(format, channels, sampleRate, devices);
         if(err == NO_ERROR) {
-            mVoipStreamCount++;   //increment VoipstreamCount only if success
-            ALOGD("OpenInput mVoipStreamCount %d",mVoipStreamCount);
+            mVoipInStreamCount++;   //increment VoipInputstreamCount only if success
+            ALOGD("OpenInput mVoipInStreamCount %d",mVoipInStreamCount);
+        } else {
+            mLock.unlock();
+            delete in;
+            in = NULL;
+            ALOGE("AudioStreamInALSA->set() failed, return NULL");
+            mLock.lock();
         }
         ALOGD("openInput: After Get alsahandle");
         if (status) *status = err;
@@ -1992,6 +2012,8 @@ void AudioHardwareALSA::handleFm(int device)
 {
     int newMode = mode();
     uint32_t activeUsecase = USECASE_NONE;
+    char ident[70];
+    int tx_dev_id, capability;
 
     if(device & AUDIO_DEVICE_OUT_FM && mIsFmActive == 0) {
         // Start FM Radio on current active device
@@ -2023,6 +2045,33 @@ void AudioHardwareALSA::handleFm(int device)
         mDeviceList.push_back(alsa_handle);
         ALSAHandleList::iterator it = mDeviceList.end();
         it--;
+
+        // Get the FM device ACDB ID and capability
+        memset(&ident,0,sizeof(ident));
+        strlcpy(ident, "ACDBID/", sizeof(ident));
+        strlcat(ident, "FM TX PREPROC", sizeof(ident));
+        tx_dev_id = snd_use_case_get(alsa_handle.ucMgr, ident, NULL);
+
+        memset(&ident,0,sizeof(ident));
+        strlcpy(ident, "CAPABILITY/", sizeof(ident));
+        strlcat(ident, "FM TX PREPROC", sizeof(ident));
+        capability = snd_use_case_get(alsa_handle.ucMgr, ident, NULL);
+
+        if ((tx_dev_id < 0) || (capability < 0)) {
+            ALOGD("No pre-proc calibration applied on receiving FM stream\n");
+        } else {
+            if (mAcdbHandle == NULL) {
+                ALOGE("mAcdbHandle is NULL\n");
+            } else {
+                acdb_send_audio_cal =
+                    (void (*)(int, int))::dlsym(mAcdbHandle,"acdb_loader_send_audio_cal");
+                if (acdb_send_audio_cal == NULL) {
+                    ALOGE("acdb_send_audio_cal is NULL\n");
+                } else {
+                    acdb_send_audio_cal(tx_dev_id, capability);
+                }
+            }
+        }
         mALSADevice->route(&(*it), (uint32_t)device, newMode);
         if(!strcmp(it->useCase, SND_USE_CASE_VERB_DIGITAL_RADIO)) {
             snd_use_case_set(mUcMgr, "_verb", SND_USE_CASE_VERB_DIGITAL_RADIO);
@@ -2109,10 +2158,11 @@ void AudioHardwareALSA::disableVoiceCall(char* verb, char* modifier, int mode,
 #endif
 }
 
-void AudioHardwareALSA::enableVoiceCall(char* verb, char* modifier, int mode,
-                                        int device, uint32_t vsid)
+status_t AudioHardwareALSA::enableVoiceCall(char* verb, char* modifier, int mode,
+                                            int device, uint32_t vsid)
 {
     // Start voice call
+    status_t status;
     unsigned long bufferSize = DEFAULT_VOICE_BUFFER_SIZE;
     alsa_handle_t alsa_handle;
     char *use_case;
@@ -2149,7 +2199,17 @@ void AudioHardwareALSA::enableVoiceCall(char* verb, char* modifier, int mode,
     } else {
         snd_use_case_set(mUcMgr, "_enamod", modifier);
     }
-    mALSADevice->startVoiceCall(&(*it), vsid);
+
+    status = mALSADevice->startVoiceCall(&(*it), vsid);
+
+    if (status == NO_ERROR) {
+        ALOGV("AudioHardwareAlsa: voice call succesfully started");
+    }
+    else {
+        ALOGE("AudioHardwareAlsa: voice call setup was unsuccesfull");
+        mDeviceList.erase(it);
+        return NO_INIT;
+    }
 
 #ifdef QCOM_USBAUDIO_ENABLED
     if((device & AudioSystem::DEVICE_OUT_ANLG_DOCK_HEADSET)||
@@ -2160,13 +2220,33 @@ void AudioHardwareALSA::enableVoiceCall(char* verb, char* modifier, int mode,
        musbRecordingState |= USBRECBIT_VOICECALL;
     }
 #endif
+
+    return NO_ERROR;
+}
+
+bool AudioHardwareALSA::isAnyCallActive() {
+
+    bool ret = false;
+
+    if ((mCSCallActive == CS_ACTIVE) ||
+        (mVoice2CallActive == CS_ACTIVE_SESSION2) ||
+        (mVolteCallActive == IMS_ACTIVE) ||
+        (mCSCallActive == CS_HOLD) ||
+        (mVoice2CallActive == CS_HOLD_SESSION2) ||
+        (mVolteCallActive == IMS_HOLD)) {
+        ret = true;
+    }
+
+    return ret;
 }
 
 bool AudioHardwareALSA::routeVoiceCall(int device, int newMode)
 {
+
+    int err = 0;
     int csCallState = mCallState&0xF;
     bool isRouted = false;
-    int err = 0;
+    status_t status;
 
  switch (csCallState) {
     case CS_INACTIVE:
@@ -2185,12 +2265,19 @@ bool AudioHardwareALSA::routeVoiceCall(int device, int newMode)
         if (mCSCallActive == CS_INACTIVE) {
             ALOGD("doRouting: Enabling CS voice call voice_vsid:%d ",
                   VOICE_SESSION_VSID);
-
-            enableVoiceCall((char *)SND_USE_CASE_VERB_VOICECALL,
-                            (char *)SND_USE_CASE_MOD_PLAY_VOICE,
-                            newMode, device, VOICE_SESSION_VSID);
-            isRouted = true;
-            mCSCallActive = CS_ACTIVE;
+            status = enableVoiceCall((char *)SND_USE_CASE_VERB_VOICECALL,
+                                   (char *)SND_USE_CASE_MOD_PLAY_VOICE,
+                                   newMode, device, VOICE_SESSION_VSID);
+            if (status == NO_INIT) {
+                 ALOGV("doRouting: voice call setup was unsuccesfull");
+                 isRouted = false;
+                 mCSCallActive = CS_INACTIVE;
+            }
+            else {
+                 ALOGV("doRouting: voice call setup was succesfull");
+                 isRouted = true;
+                 mCSCallActive = CS_ACTIVE;
+            }
         } else if (mCSCallActive == CS_HOLD) {
             ALOGD("doRouting: Resume voice call from hold state");
 
@@ -2266,12 +2353,13 @@ bool AudioHardwareALSA::routeVoiceCall(int device, int newMode)
 
 bool AudioHardwareALSA::routeVoice2Call(int device, int newMode)
 {
+
     int Voice2CallState = mCallState&0xF00;
     bool isRouted = false;
+    status_t status;
     int err = 0;
-
  switch (Voice2CallState) {
-        case CS_INACTIVE_SESSION2:
+    case CS_INACTIVE_SESSION2:
         if (mVoice2CallActive != CS_INACTIVE_SESSION2) {
             ALOGV("doRouting: Disabling voice call session2");
             disableVoiceCall((char *)SND_USE_CASE_VERB_VOICE2,
@@ -2283,14 +2371,21 @@ bool AudioHardwareALSA::routeVoice2Call(int device, int newMode)
     break;
     case CS_ACTIVE_SESSION2:
         if (mVoice2CallActive == CS_INACTIVE_SESSION2) {
-            ALOGD("doRouting: Enabling CS voice call session2"\
-                  "voice2_vsid:%d",VOICE2_SESSION_VSID);
-
-            enableVoiceCall((char *)SND_USE_CASE_VERB_VOICE2,
-                            (char *)SND_USE_CASE_MOD_PLAY_VOICE2,
-                            newMode, device, VOICE2_SESSION_VSID);
-            isRouted = true;
-            mVoice2CallActive = CS_ACTIVE_SESSION2;
+            ALOGV("doRouting: Enabling CS voice call session2, voice2_vsid: %d",
+                   VOICE2_SESSION_VSID);
+            status = enableVoiceCall((char *)SND_USE_CASE_VERB_VOICE2,
+                                   (char *)SND_USE_CASE_MOD_PLAY_VOICE2,
+                                   newMode, device, VOICE2_SESSION_VSID);
+            if (status == NO_INIT) {
+                ALOGV("doRouting: SGLTE  call setup was unsuccesfull");
+                isRouted = false;
+                mVoice2CallActive = CS_INACTIVE_SESSION2;
+            }
+            else {
+                ALOGV("doRouting: SGLTE call setup was succesfull");
+                isRouted = true;
+                mVoice2CallActive = CS_ACTIVE_SESSION2;
+           }
         } else if (mVoice2CallActive == CS_HOLD_SESSION2) {
              ALOGV("doRouting: Resume voice call session2 from hold state");
              ALSAHandleList::iterator vt_it;
@@ -2365,10 +2460,11 @@ bool AudioHardwareALSA::routeVoice2Call(int device, int newMode)
 
 bool AudioHardwareALSA::routeVoLTECall(int device, int newMode)
 {
+
     int volteCallState = mCallState&0xF0;
     bool isRouted = false;
+    status_t status;
     int err = 0;
-
  switch (volteCallState) {
     case IMS_INACTIVE:
         if (mVolteCallActive != IMS_INACTIVE) {
@@ -2383,14 +2479,22 @@ bool AudioHardwareALSA::routeVoLTECall(int device, int newMode)
     break;
     case IMS_ACTIVE:
         if (mVolteCallActive == IMS_INACTIVE) {
-            ALOGD("doRouting: Enabling IMS voice call, volte_vsid:%d ",
-                  VOLTE_SESSION_VSID);
-            enableVoiceCall((char *)SND_USE_CASE_VERB_VOLTE,
-                            (char *)SND_USE_CASE_MOD_PLAY_VOLTE,
-                            newMode, device, VOLTE_SESSION_VSID);
-            isRouted = true;
-            mVolteCallActive = IMS_ACTIVE;
-        } else if (mVolteCallActive == IMS_HOLD) {
+            ALOGD("doRouting: Enabling IMS voice call,volte_vsid:%d ",
+                   VOLTE_SESSION_VSID);
+            status = enableVoiceCall((char *)SND_USE_CASE_VERB_VOLTE,
+                                   (char *)SND_USE_CASE_MOD_PLAY_VOLTE,
+                                   newMode, device, VOLTE_SESSION_VSID);
+            if (status == NO_INIT) {
+                ALOGV("doRouting: Volte  call setup was unsuccesfull");
+                isRouted = false;
+                mVolteCallActive = IMS_INACTIVE;
+            }
+            else {
+                ALOGV("doRouting: Volte call setup was succesfull");
+                isRouted = true;
+                mVolteCallActive = IMS_ACTIVE;
+           }
+         } else if (mVolteCallActive == IMS_HOLD) {
              ALOGD("doRouting: Resume IMS call from hold state");
              ALSAHandleList::iterator vt_it;
              for(vt_it = mDeviceList.begin();
@@ -2782,7 +2886,7 @@ void AudioHardwareALSA::switchExtOut(int device) {
     } else {
         mExtOutStream = NULL;
     }
-    if (mExtOutStream == mUsbStream) {
+    if ((mExtOutStream == mUsbStream) && mExtOutStream != NULL) {
         sampleRate = mExtOutStream->common.get_sample_rate(&mExtOutStream->common);
         if (sampleRate > AFE_PROXY_SAMPLE_RATE) {
             ALOGW(" Requested samplerate %d is greater than supported so fall back to %d ",

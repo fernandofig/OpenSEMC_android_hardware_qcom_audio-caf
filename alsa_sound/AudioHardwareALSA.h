@@ -116,6 +116,7 @@ class AudioHardwareALSA;
 #define FENS_KEY            "fens_enable"
 #define ST_KEY              "st_enable"
 #define INCALLMUSIC_KEY     "incall_music_enabled"
+#define ECHO_SUPRESSION     "ec_supported"
 
 #define ANC_FLAG        0x00000001
 #define DMIC_FLAG       0x00000002
@@ -294,7 +295,7 @@ public:
     void     setMicMute(int state);
     void     setVoipMicMute(int state);
     void     setVoipConfig(int mode, int rate);
-    status_t setFmVolume(int vol);
+    status_t setFmVolume(int vol, alsa_handle_t *handle);
     void     setBtscoRate(int rate);
     status_t setLpaVolume(int vol);
     void     enableWideVoice(bool flag, uint32_t vsid = 0);
@@ -325,6 +326,8 @@ public:
 #endif
 
     int mADSPState;
+    bool mSSRComplete;
+    int mCurDevice;
 protected:
     friend class AudioHardwareALSA;
 private:
@@ -371,6 +374,7 @@ private:
     struct mixer*  mMixer;
     int mInChannels;
     bool mIsSglte;
+    bool mIsFmEnabled;
 #ifdef SEPERATED_AUDIO_INPUT
     int mInputSource;
 #endif
@@ -581,6 +585,7 @@ public:
     status_t            resume_l();
 
     void updateMetaData(size_t bytes);
+    status_t setMetaDataMode();
 
 private:
     Mutex               mLock;
@@ -889,7 +894,8 @@ protected:
 
     void                disableVoiceCall(char* verb, char* modifier, int mode, int device,
                                          uint32_t vsid = 0);
-    void                enableVoiceCall(char* verb, char* modifier, int mode, int device,
+    bool                isAnyCallActive();
+    status_t            enableVoiceCall(char* verb, char* modifier, int mode, int device,
                                         uint32_t vsid = 0);
     bool                routeVoiceCall(int device, int newMode);
     bool                routeVoLTECall(int device, int newMode);
@@ -916,7 +922,8 @@ protected:
     /* The flag holds all the audio related device settings from
      * Settings and Qualcomm Settings applications */
     uint32_t            mDevSettingsFlag;
-    uint32_t            mVoipStreamCount;
+    uint32_t            mVoipInStreamCount;
+    uint32_t            mVoipOutStreamCount;
     bool                mVoipMicMute;
     uint32_t            mVoipBitRate;
     uint32_t            mIncallMode;
