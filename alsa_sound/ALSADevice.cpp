@@ -835,12 +835,16 @@ void ALSADevice::switchDevice(alsa_handle_t *handle, uint32_t devices, uint32_t 
             int tmp_rx_id = rx_dev_id;
 
 #ifdef USE_ES325_2MIC
-            if (tx_dev_id == 4) {
-                tmp_tx_id = 34;
-                setMixerControl("VEQ Enable", 1, 0);
-                setMixerControl("ES325 2Mic Enable", 1, 0);
-            } else {
-                setMixerControl("ES325 2Mic Enable", 0, 0);
+            if (!strcmp(rxDevice, SND_USE_CASE_DEV_VOC_EARPIECE) ||
+                    !strcmp(rxDevice, SND_USE_CASE_DEV_VOC_EARPIECE_XGAIN) ||
+                    !strcmp(rxDevice, SND_USE_CASE_DEV_VOC_SPEAKER)) {
+                if (tx_dev_id == 4) {
+                    tmp_tx_id = 34;
+                    setMixerControl("VEQ Enable", 1, 0);
+                    setMixerControl("ES325 2Mic Enable", 1, 0);
+                } else {
+                    setMixerControl("ES325 2Mic Enable", 0, 0);
+                }
             }
 #endif
 #ifdef HTC_CSDCLIENT
@@ -1794,8 +1798,14 @@ char* ALSADevice::getUCMDevice(uint32_t devices, int input, char *rxDevice)
             return strdup(SND_USE_CASE_DEV_PROXY_RX_HANDSET); /* COMBO EARPIECE + PROXY RX */
 #endif
         } else if (devices & AudioSystem::DEVICE_OUT_EARPIECE) {
+#ifdef SEPERATED_VOIP
+            if (mCallMode == AUDIO_MODE_IN_COMMUNICATION) {
+                return strdup(SND_USE_CASE_DEV_VOIP_EARPIECE);
+            } else if (mCallMode == AUDIO_MODE_IN_CALL) {
+#else
             if (mCallMode == AUDIO_MODE_IN_CALL ||
                 mCallMode == AUDIO_MODE_IN_COMMUNICATION) {
+#endif
                 if (shouldUseHandsetAnc(mDevSettingsFlag, mInChannels)) {
                     return strdup(SND_USE_CASE_DEV_ANC_HANDSET); /* ANC Handset RX */
                 } else {
@@ -1809,8 +1819,14 @@ char* ALSADevice::getUCMDevice(uint32_t devices, int input, char *rxDevice)
             }
         } else if (devices & AudioSystem::DEVICE_OUT_SPEAKER) {
 #ifdef SEPERATED_VOICE_SPEAKER
+#ifdef SEPERATED_VOIP
+            if (mCallMode == AUDIO_MODE_IN_COMMUNICATION) {
+                return strdup(SND_USE_CASE_DEV_VOIP_SPEAKER);
+            } else if (mCallMode == AUDIO_MODE_IN_CALL) {
+#else
             if (mCallMode == AUDIO_MODE_IN_CALL ||
                 mCallMode == AUDIO_MODE_IN_COMMUNICATION) {
+#endif
                 return strdup(SND_USE_CASE_DEV_VOC_SPEAKER); /* Voice SPEAKER RX */
             }
 #endif
@@ -1825,8 +1841,14 @@ char* ALSADevice::getUCMDevice(uint32_t devices, int input, char *rxDevice)
                     return strdup(SND_USE_CASE_DEV_ANC_HEADSET); /* ANC HEADSET RX */
                 }
             } else {
+#ifdef SEPERATED_VOIP
+                if (mCallMode == AUDIO_MODE_IN_COMMUNICATION) {
+                    return strdup(SND_USE_CASE_DEV_VOIP_HEADPHONE);
+                } else if (mCallMode == AUDIO_MODE_IN_CALL) {
+#else
                 if (mCallMode == AUDIO_MODE_IN_CALL ||
                     mCallMode == AUDIO_MODE_IN_COMMUNICATION) {
+#endif
                     return strdup(SND_USE_CASE_DEV_VOC_HEADPHONE); /* Voice HEADSET RX */
                 } else {
                     return strdup(SND_USE_CASE_DEV_HEADPHONES); /* HEADSET RX */
@@ -1997,6 +2019,16 @@ char* ALSADevice::getUCMDevice(uint32_t devices, int input, char *rxDevice)
                     return strdup(SND_USE_CASE_DEV_VOICE_RECOGNITION ); /* VOICE RECOGNITION TX */
                 }
 #endif
+#ifdef SEPERATED_VOIP
+                if (mCallMode == AUDIO_MODE_IN_COMMUNICATION) {
+                    if (!strncmp(rxDevice, SND_USE_CASE_DEV_VOIP_EARPIECE,
+                                (strlen(SND_USE_CASE_DEV_VOIP_EARPIECE)+1))) {
+                        return strdup(SND_USE_CASE_DEV_VOIP_HANDSET);
+                    } else {
+                        return strdup(SND_USE_CASE_DEV_VOIP_LINE);
+                    }
+                }
+#endif
                 else {
                     if ((rxDevice != NULL) &&
                         !strncmp(rxDevice, SND_USE_CASE_DEV_ANC_HANDSET,
@@ -2010,6 +2042,19 @@ char* ALSADevice::getUCMDevice(uint32_t devices, int input, char *rxDevice)
         } else if (devices & AudioSystem::DEVICE_IN_AUX_DIGITAL) {
             return strdup(SND_USE_CASE_DEV_HDMI_TX); /* HDMI TX */
         } else if ((devices & AudioSystem::DEVICE_IN_WIRED_HEADSET)) {
+#ifdef SEPERATED_HEADSET_MIC
+#ifdef SEPERATED_VOIP
+            if (mCallMode == AUDIO_MODE_IN_COMMUNICATION) {
+                return strdup(SND_USE_CASE_DEV_VOIP_HEADSET);
+            }
+#endif
+            if (mCallMode == AUDIO_MODE_IN_CALL) {
+                return strdup(SND_USE_CASE_DEV_VOC_HEADSET);
+            }
+            if (mInputSource == AUDIO_SOURCE_VOICE_RECOGNITION) {
+                return strdup(SND_USE_CASE_DEV_VOICE_RECOGNITION_HEADSET);
+            }
+#endif
             return strdup(SND_USE_CASE_DEV_HEADSET); /* HEADSET TX */
 #ifdef QCOM_ANC_HEADSET_ENABLED
         } else if (devices & AudioSystem::DEVICE_IN_ANC_HEADSET) {
