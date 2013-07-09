@@ -1180,7 +1180,7 @@ AudioStreamIn* AudioHardware::openInputStream(
 
     mLock.lock();
 #ifdef QCOM_VOIP_ENABLED
-    if(devices == AudioSystem::DEVICE_IN_COMMUNICATION) {
+    if((devices == AudioSystem::DEVICE_IN_COMMUNICATION) && (*sampleRate <= AUDIO_HW_VOIP_SAMPLERATE_16K)) {
         ALOGE("Create Audio stream Voip \n");
         AudioStreamInVoip* inVoip = new AudioStreamInVoip();
         status_t lStatus = NO_ERROR;
@@ -1525,22 +1525,24 @@ size_t AudioHardware::getInputBufferSize(uint32_t sampleRate, int format, int ch
         return 0;
     }
 
-    if (sampleRate == 8000) {
-       return 320*channelCount;
-    } else if (sampleRate == 16000){
-       return 640*channelCount;
-    } else {
-        /*
-            Return pcm record buffer size based on the sampling rate:
-            If sampling rate >= 44.1 Khz, use 512 samples/channel pcm recording and
-            If sampling rate < 44.1 Khz, use 256 samples/channel pcm recording
-        */
-       if(sampleRate >= 44100){
-           return 1024*channelCount;
-       } else {
-           return 512*channelCount;
-       }
+    size_t bufferSize = 0;
+
+    if (sampleRate == 8000 || sampleRate == 16000 || sampleRate == 32000) {
+       bufferSize = (sampleRate * channelCount * 20 * sizeof(int16_t)) / 1000;
     }
+    else if (sampleRate == 11025 || sampleRate == 12000) {
+       bufferSize = 256 * sizeof(int16_t) * channelCount;
+    }
+    else if (sampleRate == 22050 || sampleRate == 24000) {
+       bufferSize = 512 * sizeof(int16_t) * channelCount;
+    }
+    else if (sampleRate == 44100 || sampleRate == 48000) {
+       bufferSize = 1024 * sizeof(int16_t) * channelCount;
+    }
+
+    ALOGD("getInputBufferSize: sampleRate: %d channelCount: %d bufferSize: %d", sampleRate, channelCount, bufferSize);
+
+    return bufferSize;
 }
 
 static status_t set_volume_rpc(uint32_t device,
@@ -2412,6 +2414,18 @@ status_t AudioHardware::doRouting(AudioStreamInMSM8x60 *input)
                     sndDevice = SND_DEVICE_ANC_HEADSET;
                 }
 #endif
+#ifdef USE_SAMSUNG_VOIP_DEVICE
+            else if (isStreamOnAndActive(VOIP_CALL)) {
+                if (outputDevices & AudioSystem::DEVICE_OUT_EARPIECE) {
+                        ALOGD("Routing audio to VOIP handset\n");
+                        sndDevice = SND_DEVICE_VOIP_HANDSET;
+                }
+                else if (outputDevices & AudioSystem::DEVICE_OUT_SPEAKER) {
+                        ALOGD("Routing audio to VOIP speaker\n");
+                        sndDevice = SND_DEVICE_VOIP_HANDSET;
+                }
+            }
+#endif
             else if (isStreamOnAndActive(PCM_PLAY)
 #ifdef QCOM_TUNNEL_LPA_ENABLED
                      || isStreamOnAndActive(LPA_DECODE)
@@ -2431,18 +2445,8 @@ status_t AudioHardware::doRouting(AudioStreamInMSM8x60 *input)
                 }
 #endif
                 else {
-#ifdef USE_SAMSUNG_VOIP_DEVICE
-                  if (mMode == AudioSystem::MODE_IN_COMMUNICATION) {
-                    ALOGD("Routing audio to VOIP speaker\n");
-                    sndDevice = SND_DEVICE_VOIP_SPEAKER;
-                  }
-                  else {
-#endif
                     ALOGI("Routing audio to Speaker\n");
                     sndDevice = SND_DEVICE_SPEAKER;
-#ifdef USE_SAMSUNG_VOIP_DEVICE
-                  }
-#endif
                 }
             } else {
                 ALOGI("Routing audio to Speaker (default)\n");
@@ -5120,10 +5124,10 @@ status_t AudioHardware::AudioStreamInVoip::set(
     mFormat =  *pFormat;
     mChannels = *pChannels;
     mSampleRate = *pRate;
-    if(mSampleRate == 8000)
-       mBufferSize = 320;
-    else if(mSampleRate == 16000)
-       mBufferSize = 640;
+    if(mSampleRate == AUDIO_HW_VOIP_SAMPLERATE_8K)
+       mBufferSize = AUDIO_HW_VOIP_BUFFERSIZE_8K;
+    else if(mSampleRate == AUDIO_HW_VOIP_SAMPLERATE_16K)
+       mBufferSize = AUDIO_HW_VOIP_BUFFERSIZE_16K;
     else
     {
        ALOGE(" unsupported sample rate");

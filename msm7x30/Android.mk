@@ -36,6 +36,10 @@ ifeq ($(BOARD_USES_STEREO_HW_SPEAKER),true)
     LOCAL_CFLAGS += -DWITH_STEREO_HW_SPEAKER
 endif
 
+ifeq ($(BOARD_HAVE_HTC_AUDIO),true)
+    LOCAL_CFLAGS += -DHTC_AUDIO
+endif
+
 ifeq ($(BOARD_HAVE_SAMSUNG_AUDIO),true)
     LOCAL_CFLAGS += -DSAMSUNG_AUDIO
 endif
@@ -77,6 +81,11 @@ LOCAL_C_INCLUDES += hardware/libhardware/include
 LOCAL_C_INCLUDES += hardware/libhardware_legacy/include
 LOCAL_C_INCLUDES += frameworks/base/include
 LOCAL_C_INCLUDES += system/core/include
+
+ifneq ($(TARGET_KERNEL_SOURCE),)
+    LOCAL_C_INCLUDES += $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include
+    LOCAL_ADDITIONAL_DEPENDENCIES := $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr
+endif
 
 include $(BUILD_SHARED_LIBRARY)
 
